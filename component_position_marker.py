@@ -20,6 +20,7 @@ class ComponentPositionMarker:
         if not os.path.exists(job_path.decode('utf-8')):
             logging.error("Job file %s does not exist.", job_path.decode('utf-8'))
             exit(1)
+        self.job_path = job_path
         self.job = vSDK_OpenJob(job_path)
         self.pcb = vSDK_Job_GetCurrentPcb(self.job)
         self.board = vSDK_Pcb_GetBoard(self.pcb)
@@ -72,7 +73,7 @@ class ComponentPositionMarker:
                                    positive))
         return all_layer_data
 
-    def add_layer(self, layer_name: str, layer_side: bool):
+    def add_layer(self, layer_name: str, layer_side: bool) -> tuple:
         """
         添加一个层，如果存在同名层，则覆盖
 
@@ -95,6 +96,10 @@ class ComponentPositionMarker:
         vSDK_Board_UpdateLayerConfigFile(self.pcb)
         return layer_id.value, layer
     
+    def GetDcodeCountByLayerId(self, layerId: int):
+        DcodeCount, DcodeTable = vSDK_Layer_GetDcodeCountByLayerId(self.board, layerId)
+        return DcodeCount, DcodeTable
+    
     def arc(self, CenterX: float, CenterY: float, Radius: float, StartAngle: float, AngleRotate: float, layerId: int,
             LineLength: float = 0.01, LineWidth: float = 0.01, isRectangle: bool = True, PositiveNegative: bool = True,
             Filled: bool = True) -> int:
@@ -114,7 +119,6 @@ class ComponentPositionMarker:
         :param Filled: 图形是否填充 (True 为填充)
         :return: 返回新增图形的 ObjectID
         """
-
         arcShape = vSDK_Shape_CreateShapeByArc(CenterX, CenterY, Radius, StartAngle,
                                                AngleRotate, LineLength, LineWidth, isRectangle,
                                                PositiveNegative, Filled);
@@ -161,34 +165,98 @@ class ComponentPositionMarker:
         return layerObjectId.value
     
     def set_mark_format(self, diameter: float, filled: bool):
+        '''
+        设置标记点格式
+        
+        :param diameter: 图形的直径
+        :param filled: 图形是否填充
+        '''
+        if diameter <= 0:
+            logging.warning("Diameter cannot be set to 0 or negative. Using default value of 0.8.")
+            diameter = 0.8
         self.circle_diameter = diameter
         self.filled = filled
+        logging.info("Set mark format: diameter = %f, filled = %s", diameter, filled)
 
     def place_mark(self):
+        '''
+        在所有的元件中心绘制标记点
+        '''
         self.part_data_list = self.get_part_data()
-        layer_tcp_id, layer_tcp = self.add_layer(self.layer_tcp_name, True)
-        layer_bcp_id, layer_bcp = self.add_layer(self.layer_bcp_name, False)
-        layer_id_list = [layer_tcp_id, layer_bcp_id]
+        self.layer_tcp_id, layer_tcp = self.add_layer(self.layer_tcp_name, True)
+        self.layer_bcp_id, layer_bcp = self.add_layer(self.layer_bcp_name, False)
+        layer_id_list = [self.layer_tcp_id, self.layer_bcp_id]
+        logging.debug("layer_id_list: %s", layer_id_list)
         for part_data in self.part_data_list:
             self.circle(part_data[0], part_data[1], self.circle_diameter, layer_id_list[part_data[2] - 1], circleFilled=self.filled)
-            logging.warning("Circle drawn at (%f, %f) on layer %d", part_data[0], part_data[1], part_data[2])
+            logging.debug("Mark drawn at (%f, %f) on layer %d", part_data[0], part_data[1], part_data[2])
+        self.save_job()
 
     def clear_mark(self):
         '''
-        清除元件位置标记
-        
-        :return: None
+        清除所有元件位置标记点
         '''
         # 按名称查询 tcp, bcp 层是否存在，如有则删除
-        layer = vSDK_Board_GetLayerByName(self.board, self.layer_tcp_name)
+        layer = vSDK_Board_GetLayerByName(self.board, self.layer_tcp_name.encode())
         if layer.value:
-            vSDK_Board_DeleteLayer(self.board, self.layer_tcp_name)
-        layer = vSDK_Board_GetLayerByName(self.board, self.layer_bcp_name)
+            vSDK_Board_DeleteLayer(self.board, self.layer_tcp_name.encode())
+            logging.info("Layer deleted: %s", self.layer_tcp_name)
+        else:
+            logging.warning("Layer %s is not found", self.layer_tcp_name)
+        
+        layer = vSDK_Board_GetLayerByName(self.board, self.layer_bcp_name.encode())
         if layer.value:
-            vSDK_Board_DeleteLayer(self.board, self.layer_bcp_name)
-        logging.warning("Layers %s and %s are deleted.", self.layer_tcp_name, self.layer_bcp_name)
+            vSDK_Board_DeleteLayer(self.board, self.layer_bcp_name.encode())
+            logging.info("Layer deleted: %s", self.layer_bcp_name)
+        else:
+            logging.warning("Layer %s is not found", self.layer_bcp_name)
+        self.save_job()
+
+    def export_layer_gerber(self, layer_name: str, layer_id: int) -> str:
+        '''
+        导出指定层的 Gerber 文件到 Job 目录
+        
+        :param layer_name: 层名称
+        :param layer_id: 层 ID
+        :return: Gerber 文件路径
+        '''
+        layer = vSDK_Board_GetLayerByName(self.board, layer_name.encode())
+        if not layer.value:
+            logging.error("Layer %s not found", layer_name)
+            return ""
+        
+        # 导出 Gerber 文件
+        job_folder = os.path.dirname(self.job_path.decode('utf-8'))
+        if not os.path.exists(job_folder):
+            logging.error("Job folder %s does not exist.", job_folder)
+            return ""
+        gerber_path = os.path.join(job_folder, layer_name + ".gbr").encode()
+        vSDK_Layer_ExportGerber(self.pcb, layer_id, gerber_path, 0)
+        logging.info("Exported Gerber files to %s", gerber_path.decode())
+        return job_folder
+
+    def export_cp_gerber(self) -> str:
+        '''
+        导出 TCP 和 BCP 层的 Gerber 文件
+        
+        :return: 导出 Gerber 文件的文件夹路径
+        '''
+        vSDK_Board_UpdateLayerConfigFile(self.pcb)  # 更新层配置文件
+        job_folder = self.export_layer_gerber(self.layer_tcp_name, self.layer_tcp_id)
+        if not job_folder:
+            return ""
+        job_folder = self.export_layer_gerber(self.layer_bcp_name, self.layer_bcp_id)
+        if not job_folder:
+            return ""
+        return job_folder
+
 
 if __name__ == "__main__":
-    sdk_path = b'C:/VayoPro/DFX_MetaLab/'
-    job_path = b"E:/DFXMetaLabDev/jobs/DEMO01.vayo/DEMO01.job" # vayo 工程文件
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    sdk_path = b"C:/VayoPro/DFX_MetaLab/"
+    job_path = b"E:/DFXMetaLabDev/jobs/DEMO.vayo/DEMO.job"
     cpm = ComponentPositionMarker(sdk_path, job_path)
+    cpm.set_mark_format(0.8, False)
+    cpm.place_mark()
+    cpm.export_cp_gerber()
+    cpm.clear_mark()

@@ -4742,3 +4742,5 @@ def vSDK_Shape_GetArcOrPoint(ArcOrPoint, PointIndex: int):
     vSDK_dll.vSDK_Shape_GetArcOrPoint(ArcOrPoint, PointIndex, ctypes.byref(ArcOrPointX), ctypes.byref(ArcOrPointY), ctypes.byref(ArcOrPointRadius), ctypes.byref(ArcOrPointStartAngle), ctypes.byref(ArcOrPointAngleRotate), ctypes.byref(ArcOrPointType))
     return ArcOrPointX, ArcOrPointY, ArcOrPointRadius, ArcOrPointStartAngle, ArcOrPointAngleRotate, ArcOrPointType
 
+def vSDK_Layer_ExportGerber(Pcb, LayerID: int, CExportGerberFileName: str, Mode: int):
+    vSDK_dll.vSDK_Layer_ExportGerber(Pcb, LayerID, CExportGerberFileName, Mode)
